@@ -46,7 +46,7 @@ try:
         load_log, overlay_log, render_substitution, substitution_anchor,
         SUBSTITUTION_TOTAL_SECONDS, render_reappearance,
     )
-    from .vanish_sound import SOUND_PATH, TELEPORT_SOUND_PATH, VanishSound
+    from .vanish_sound import SOUND_PATH, TELEPORT_SOUND_PATH, VanishSound, find_virtual_mic_player
 except ImportError:
     from goku_settings import choose_goku_delay
     from ui_text import put_text, text_size
@@ -62,7 +62,7 @@ except ImportError:
         load_log, overlay_log, render_substitution, substitution_anchor,
         SUBSTITUTION_TOTAL_SECONDS, render_reappearance,
     )
-    from vanish_sound import SOUND_PATH, TELEPORT_SOUND_PATH, VanishSound
+    from vanish_sound import SOUND_PATH, TELEPORT_SOUND_PATH, VanishSound, find_virtual_mic_player
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -162,6 +162,11 @@ def parse_args() -> argparse.Namespace:
         help="Driver da webcam virtual a usar",
     )
     parser.add_argument("--virtual-device", help="Nome do dispositivo virtual a usar")
+    parser.add_argument(
+        "--virtual-mic", action=argparse.BooleanOptionalAction, default=None,
+        help="Toca os efeitos sonoros também no 'VanishCam Mic' (Linux, setup_virtual_mic.sh); "
+             "por padrão é usado se existir. --no-virtual-mic desativa",
+    )
     parser.add_argument(
         "--mode", choices=edition_modes(),
         help="Pula o menu inicial e inicia direto no modo escolhido",
@@ -375,6 +380,22 @@ def open_virtual_camera(args: argparse.Namespace, width: int, height: int):
         return None
     print(f"[Webcam] Saída virtual ativa: {camera.device} ({width}x{height}, {args.fps:g} FPS no máximo)")
     return camera
+
+
+def open_virtual_mic(args: argparse.Namespace) -> list[str] | None:
+    """Player command for the 'VanishCam Mic' sound copy, following --virtual-mic."""
+    wanted = getattr(args, "virtual_mic", None)
+    if wanted is False:
+        return None
+    player = find_virtual_mic_player()
+    if player is None:
+        if wanted is True:
+            raise RuntimeError(
+                "Microfone virtual indisponível. Rode ./setup_virtual_mic.sh e escolha o microfone."
+            )
+        return None
+    print("[Webcam] Efeitos sonoros também no microfone virtual 'VanishCam Mic'.")
+    return player
 
 
 def send_virtual_frame(camera, frame: np.ndarray) -> None:
@@ -869,6 +890,15 @@ def start_vanish_on_gesture(state: AppState, name: str, score: float, now: float
 RETURN_TO_MENU = "menu"
 
 
+def start_v_return(state: AppState, name: str, score: float, released: bool, now: float) -> bool:
+    """Normal/Particles: a new V (after lowering the hand) starts the return."""
+    if state.phase == "vanished" and released and name == "Victory" and score >= 0.62:
+        state.phase = "appearing"
+        state.vanish_started = now
+        return True
+    return False
+
+
 def start_naruto_return(state: AppState, segmenter, camera_frame: np.ndarray,
                         timestamp_ms: int, width: int, height: int, now: float):
     """Start the smoke return; returns (mask, anchor) or None if nobody is in frame."""
@@ -1024,7 +1054,11 @@ def run_camera(args: argparse.Namespace, resources: ExitStack, mode: str, licens
     resources.callback(recognizer.close)
     log_sprite = load_log() if mode == "naruto" else None
     sound_path = {"naruto": SOUND_PATH, "goku": TELEPORT_SOUND_PATH}.get(mode)
-    vanish_sound = VanishSound(sound_path) if sound_path is not None else None
+    vanish_sound = None
+    if sound_path is not None:
+        virtual_mic = open_virtual_mic(args)
+        vanish_sound = (VanishSound(sound_path, virtual_mic=virtual_mic) if virtual_mic
+                        else VanishSound(sound_path))
     if vanish_sound is not None:
         resources.callback(vanish_sound.close)
     resources.callback(cv2.destroyAllWindows)
@@ -1058,13 +1092,18 @@ def run_camera(args: argparse.Namespace, resources: ExitStack, mode: str, licens
     goku_countdown_remaining: float | None = None
     # Naruto returns on a new join: hands must be released after vanishing first.
     naruto_hands_released = False
+    # Same rule for the V sign: lower the hand before a new V brings you back.
+    v_released = False
     return_to_menu = False
     virtual_camera = None
     virtual_camera_initialized = False
     calibration_remaining = None
     last_gesture_report = 0.0
     started = time.perf_counter()
-    print("[Webcam] Saia do quadro por 4 segundos: capturando o fundo.")
+    # Background kept from the previous effect when the user pressed M.
+    saved_background = getattr(args, "saved_background", None)
+    if saved_background is None:
+        print("[Webcam] Saia do quadro por 4 segundos: capturando o fundo.")
     if mode == "goku":
         print(f"[Webcam] Goku: dois dedos juntos na testa por {goku_delay:g} {'segundo' if goku_delay == 1 else 'segundos'} para sumir ou reaparecer. "
               "Solte a pose antes de repetir o gesto.")
@@ -1088,6 +1127,15 @@ def run_camera(args: argparse.Namespace, resources: ExitStack, mode: str, licens
                 camera_frame = cv2.flip(camera_frame, 1)
 
             height, width = camera_frame.shape[:2]
+            if saved_background is not None:
+                if saved_background.shape == camera_frame.shape:
+                    background = saved_background
+                    state.phase = "ready"
+                    print("[Webcam] Usando o fundo já capturado. ESPAÇO captura um novo.")
+                else:  # Resolution changed: the old background no longer fits.
+                    state.calibration_started = time.perf_counter()
+                    print("[Webcam] Saia do quadro por 4 segundos: capturando o fundo.")
+                saved_background = None
             if not virtual_camera_initialized:
                 virtual_camera = open_virtual_camera(args, width, height)
                 virtual_camera_initialized = True
@@ -1214,7 +1262,48 @@ def run_camera(args: argparse.Namespace, resources: ExitStack, mode: str, licens
                     vanished_frame = None
                     log_anchor = None
 
+            elif mode in ("normal", "particles") and state.phase == "appearing":
+                age = time.perf_counter() - state.vanish_started
+                if mode == "normal" and now - last_mask_at >= 0.05:
+                    rgb = cv2.cvtColor(camera_frame, cv2.COLOR_BGR2RGB)
+                    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+                    last_mask = person_mask(segmenter, mp_image, elapsed_ms, width, height)
+                    last_mask_at = now
+                if mode == "normal":
+                    progress = max(0.0, 1.0 - age / VANISH_SECONDS)
+                    display = apply_dissolve(camera_frame, background, last_mask, progress,
+                                             dissolve_field, sparkle_noise)
+                    finished = progress <= 0.0
+                else:
+                    # Particles fly back in and rebuild the silhouette.
+                    display = particle_effect.render(background, max(0.0, PARTICLE_SECONDS - age))
+                    finished = age >= PARTICLE_SECONDS
+                if finished:
+                    state.phase = "ready"
+                    state.vanish_started = None
+                    vanished_frame = None
+                    particle_effect = None
+                    display = camera_frame
+
             elif state.phase == "vanished":
+                if (mode in ("normal", "particles")
+                        and now - state.last_gesture_check >= GESTURE_INTERVAL_SECONDS):
+                    state.last_gesture_check = now
+                    rgb = cv2.cvtColor(camera_frame, cv2.COLOR_BGR2RGB)
+                    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+                    name, score = recognize_gesture(recognizer, mp_image, elapsed_ms)
+                    if name != "Victory":
+                        v_released = True
+                    elif start_v_return(state, name, score, v_released, now):
+                        last_mask = person_mask(segmenter, mp_image, elapsed_ms, width, height)
+                        last_mask_at = now
+                        if mode == "particles":
+                            try:
+                                particle_effect = ParticleEffect(camera_frame, last_mask)
+                            except ValueError:
+                                particle_effect = None
+                                state.phase = "ready"
+                        vanished_frame = None
                 if mode == "naruto" and now - state.last_gesture_check >= 0.08:
                     state.last_gesture_check = now
                     rgb = cv2.cvtColor(camera_frame, cv2.COLOR_BGR2RGB)
@@ -1253,7 +1342,8 @@ def run_camera(args: argparse.Namespace, resources: ExitStack, mode: str, licens
                                 f"rotação={recognizer.preferred_rotation or 0}"
                             )
                             last_gesture_report = now
-                        start_vanish_on_gesture(state, name, score, now)
+                        if start_vanish_on_gesture(state, name, score, now):
+                            v_released = False
                     else:
                         joined = recognizer.recognize_joined_hands(mp_image, elapsed_ms)
                         if args.gesture_debug and now - last_gesture_report >= 1.0:
@@ -1330,6 +1420,8 @@ def run_camera(args: argparse.Namespace, resources: ExitStack, mode: str, licens
                 break
             if key == ord("m") and getattr(args, "menu_available", False):
                 return_to_menu = True
+                # Reused by the next effect, so changing effects needs no new capture.
+                args.saved_background = background
                 break
             if key == ord(" "):
                 state.phase = "calibrating"
@@ -1374,6 +1466,21 @@ def run_camera(args: argparse.Namespace, resources: ExitStack, mode: str, licens
                         last_mask_at = now
                         vanished_frame = None
                         vanish_sound.play()
+                elif (background is not None and mode in ("normal", "particles")
+                      and state.phase == "vanished"):
+                    rgb = cv2.cvtColor(camera_frame, cv2.COLOR_BGR2RGB)
+                    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+                    last_mask = person_mask(segmenter, mp_image, elapsed_ms, width, height)
+                    last_mask_at = now
+                    state.phase = "appearing"
+                    state.vanish_started = now
+                    vanished_frame = None
+                    if mode == "particles":
+                        try:
+                            particle_effect = ParticleEffect(camera_frame, last_mask)
+                        except ValueError:
+                            particle_effect = None
+                            state.phase = "ready"
                 elif background is not None and mode not in ("goku", "itachi"):
                     state.phase = "ready"
                     state.vanish_started = None
@@ -1400,6 +1507,7 @@ def run_camera(args: argparse.Namespace, resources: ExitStack, mode: str, licens
                     vanish_sound.play()
                     log_anchor = None
                     naruto_hands_released = False
+                v_released = False
                 vanished_frame = None
                 particle_effect = None
             elif key == ord("f"):

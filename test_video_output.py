@@ -16,6 +16,7 @@ def arguments(**overrides):
         camera=0, width=960, height=540, fps=30.0, fullscreen=False,
         no_mirror=True, virtual_camera=None, virtual_backend=None, virtual_device=None,
         gesture_debug=False, mode="normal", no_countdown=True,
+        virtual_mic=False,  # Tests must not depend on the machine's audio setup.
     )
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -227,6 +228,144 @@ class VideoLoopTests(unittest.TestCase):
         self.assertTrue(np.any(displayed[0] != frames[0]))  # Conto alla rovescia.
         for index in range(2, 5):  # Dopo la calibrazione l'anteprima torna pulita.
             np.testing.assert_array_equal(displayed[index], sent[index])
+
+    def run_v_return(self, mode, script):
+        clock = [0.0]
+        empty, person = np.full((24, 40, 3), 30, np.uint8), np.full((24, 40, 3), 200, np.uint8)
+        capture = Mock()
+        capture.read.side_effect = lambda: (True, (empty if clock[0] < 4.5 else person).copy())
+        gesture = {"name": "None"}
+        preview, phases = [], []
+        steps = iter(script)
+
+        def wait_key(delay):
+            advance, key, name = next(steps)
+            clock[0] += advance
+            gesture["name"] = name
+            return key
+
+        with ExitStack() as mocks:
+            mocks.enter_context(patch.object(app, "download_models"))
+            mocks.enter_context(patch.object(app, "open_camera", return_value=capture))
+            mocks.enter_context(patch.object(app, "create_tasks", return_value=(Mock(), Mock())))
+            mocks.enter_context(patch.object(app, "open_virtual_camera", return_value=None))
+            mocks.enter_context(patch.object(app, "person_mask", return_value=np.ones((24, 40), np.float32)))
+            mocks.enter_context(patch.object(app, "recognize_gesture",
+                                             side_effect=lambda *a: (gesture["name"], 0.9)))
+            mocks.enter_context(patch.object(app.time, "perf_counter", side_effect=lambda: clock[0]))
+            for name in ("namedWindow", "resizeWindow", "destroyAllWindows"):
+                mocks.enter_context(patch.object(app.cv2, name))
+            mocks.enter_context(patch.object(app.cv2, "imshow",
+                                             side_effect=lambda name, frame: preview.append(frame.copy())))
+            mocks.enter_context(patch.object(app.cv2, "waitKey", side_effect=wait_key))
+            mocks.enter_context(patch("builtins.print"))
+            args = arguments(mode=mode, width=40, height=24)
+            self.assertEqual(app.run_camera(args, ExitStack(), mode), 0)
+        return preview, person
+
+    def test_normal_returns_only_after_lowering_hand_and_new_v(self):
+        script = ([(0.5, -1, "None")] * 10                     # Background capture.
+                  + [(0.2, -1, "Victory")]                     # V: vanish.
+                  + [(0.5, -1, "Victory")] * 10                # Holding the same V: stays gone.
+                  + [(0.2, -1, "None"), (0.2, -1, "Victory")]  # Lower, then V again: return.
+                  + [(0.5, -1, "None")] * 9
+                  + [(0.0, ord("q"), "None")])
+        preview, person = self.run_v_return("normal", script)
+        np.testing.assert_array_equal(preview[20], np.full((24, 40, 3), 30, np.uint8))  # Still gone.
+        np.testing.assert_array_equal(preview[-1], person)  # Back after the new V.
+
+    def test_particles_return_with_r_key(self):
+        script = ([(0.5, -1, "None")] * 10
+                  + [(0.2, -1, "Victory")]
+                  + [(0.5, -1, "None")] * 6
+                  + [(0.1, ord("R"), "None")]                  # Upper-case R.
+                  + [(0.5, -1, "None")] * 6
+                  + [(0.0, ord("q"), "None")])
+        preview, person = self.run_v_return("particles", script)
+        np.testing.assert_array_equal(preview[-1], person)
+
+    def test_virtual_mic_is_optional_required_or_disabled(self):
+        player = ["/usr/bin/pw-play", "--target", "vanishcam_fx"]
+        with patch.object(app, "find_virtual_mic_player", return_value=player), \
+                patch("builtins.print"):
+            self.assertEqual(app.open_virtual_mic(arguments(virtual_mic=None)), player)
+            self.assertIsNone(app.open_virtual_mic(arguments(virtual_mic=False)))
+        with patch.object(app, "find_virtual_mic_player", return_value=None):
+            self.assertIsNone(app.open_virtual_mic(arguments(virtual_mic=None)))
+            with self.assertRaisesRegex(RuntimeError, "setup_virtual_mic.sh"):
+                app.open_virtual_mic(arguments(virtual_mic=True))
+
+    def test_sound_also_plays_on_virtual_mic(self):
+        from local_app import vanish_sound
+
+        with patch.object(vanish_sound.shutil, "which", return_value="/usr/bin/ffplay"), \
+                patch.dict("sys.modules", {"pygame": None}), \
+                patch.object(vanish_sound.subprocess, "Popen") as popen:
+            sound = vanish_sound.VanishSound(vanish_sound.SOUND_PATH,
+                                             virtual_mic=["pw-play", "--target", "vanishcam_fx"])
+            sound.play()
+        commands = [call.args[0] for call in popen.call_args_list]
+        self.assertIn(["pw-play", "--target", "vanishcam_fx", str(vanish_sound.SOUND_PATH)], commands)
+        self.assertTrue(any(command[0] == "/usr/bin/ffplay" for command in commands))  # Speakers too.
+
+    def test_virtual_mic_detected_only_when_sink_exists(self):
+        from local_app import vanish_sound
+
+        listing = "1\talsa_output.pci\tPipeWire\ts32le 2ch 48000Hz\tRUNNING\n"
+        with patch.object(vanish_sound.sys, "platform", "linux"), \
+                patch.object(vanish_sound.shutil, "which", side_effect=lambda name: f"/usr/bin/{name}"), \
+                patch.object(vanish_sound.subprocess, "run") as run:
+            run.return_value.stdout = listing
+            self.assertIsNone(vanish_sound.find_virtual_mic_player())
+            run.return_value.stdout = listing + "2\tvanishcam_fx\tPipeWire\tfloat32le\tRUNNING\n"
+            self.assertEqual(vanish_sound.find_virtual_mic_player(),
+                             ["/usr/bin/pw-play", "--target", "vanishcam_fx"])
+
+    def run_with_saved_background(self, saved, keys):
+        clock = [0.0]
+        frame = np.full((24, 40, 3), 90, np.uint8)
+        capture = Mock()
+        capture.read.side_effect = lambda: (True, frame.copy())
+        keys, preview, printed = iter(keys), [], []
+
+        def wait_key(delay):
+            clock[0] += 0.1
+            return next(keys)
+
+        with ExitStack() as mocks:
+            mocks.enter_context(patch.object(app, "download_models"))
+            mocks.enter_context(patch.object(app, "open_camera", return_value=capture))
+            mocks.enter_context(patch.object(app, "create_tasks", return_value=(Mock(), Mock())))
+            mocks.enter_context(patch.object(app, "open_virtual_camera", return_value=None))
+            mocks.enter_context(patch.object(app, "recognize_gesture", return_value=("None", 0.0)))
+            mocks.enter_context(patch.object(app.time, "perf_counter", side_effect=lambda: clock[0]))
+            for name in ("namedWindow", "resizeWindow", "destroyAllWindows"):
+                mocks.enter_context(patch.object(app.cv2, name))
+            mocks.enter_context(patch.object(app.cv2, "imshow",
+                                             side_effect=lambda name, shown: preview.append(shown.copy())))
+            mocks.enter_context(patch.object(app.cv2, "waitKey", side_effect=wait_key))
+            mocks.enter_context(patch("builtins.print", side_effect=lambda *a, **k: printed.append(" ".join(map(str, a)))))
+            args = arguments(width=40, height=24, no_countdown=False)
+            args.menu_available = True
+            args.saved_background = saved
+            result = app.run_camera(args, ExitStack(), "normal")
+        return result, args, preview, printed
+
+    def test_saved_background_skips_capture_and_m_keeps_it(self):
+        saved = np.full((24, 40, 3), 30, np.uint8)
+        result, args, preview, printed = self.run_with_saved_background(saved, [-1, -1, ord("m")])
+        self.assertEqual(result, app.RETURN_TO_MENU)
+        self.assertFalse(any("Capturando o fundo" in line for line in printed))
+        self.assertTrue(any("Usando o fundo já capturado" in line for line in printed))
+        np.testing.assert_array_equal(preview[0], np.full((24, 40, 3), 90, np.uint8))  # No countdown.
+        self.assertIs(args.saved_background, saved)  # Kept for the next effect.
+
+    def test_saved_background_of_other_size_is_captured_again(self):
+        saved = np.full((48, 80, 3), 30, np.uint8)
+        result, args, preview, printed = self.run_with_saved_background(saved, [-1, -1, ord("q")])
+        self.assertEqual(result, 0)
+        self.assertTrue(any("Saia do quadro" in line for line in printed))
+        self.assertFalse(np.array_equal(preview[0], np.full((24, 40, 3), 90, np.uint8)))  # Countdown.
 
     def test_m_key_returns_to_effect_menu_with_same_webcam(self):
         args = arguments(mode=None, camera=None)
