@@ -51,6 +51,17 @@ with headers for the running kernel), loads it as `/dev/video10` labeled
 **VanishCam**, and can enable it at boot. Then select **VanishCam** in your
 video-call app. Without the module, the app keeps running with the local preview only.
 
+**Virtual microphone (sound effects in the call):** a webcam carries only video,
+so the effect sounds (Naruto's smoke, Goku's teleport) reach the call through a
+virtual microphone. Run `./setup_virtual_mic.sh` (PipeWire/PulseAudio, no sudo):
+it lists your microphones, you choose one, and it creates **VanishCam Mic** =
+that microphone + the effect sounds. Select **VanishCam Mic** as the microphone in
+the call app; you still hear the effects on your speakers. The app uses it
+automatically when it exists (`--no-virtual-mic` disables it, `--virtual-mic`
+requires it). Run the script again to switch microphones, `./setup_virtual_mic.sh
+status` to check it and `./setup_virtual_mic.sh remove` to delete it. PipeWire
+drops it on reboot: run the script again.
+
 Notes:
 - On Linux, `requirements.txt` installs MediaPipe 0.10.35: the 1.x wheels are
   killed (SIGKILL) while creating the vision tasks. On Python 3.14 it installs
@@ -71,9 +82,9 @@ Notes:
    or `0.1`. A decimal comma (`0,5`) also works. Cancel stops the launch.
 4. Step out of the camera frame for 4 seconds while the empty background is captured. The preview shows a countdown ring; press `SPACE` at any time to capture the background again.
 
-**Normal Vanish:** Raise your index and middle fingers in a V sign. The dissolve starts as soon as the gesture is recognized and lasts about 3.6 seconds.
+**Normal Vanish:** Raise your index and middle fingers in a V sign. The dissolve starts as soon as the gesture is recognized and lasts about 3.6 seconds. To reappear, lower your hand and make the V sign again (or press `R`): the dissolve plays in reverse.
 
-**Particles:** Make the same V sign as in Normal Vanish. Your silhouette breaks into small colored fragments that drift sideways as if carried by the wind. The effect lasts about 2.1 seconds. It captures your silhouette once when the effect starts to keep the video smooth.
+**Particles:** Make the same V sign as in Normal Vanish. Your silhouette breaks into small colored fragments that drift sideways as if carried by the wind. The effect lasts about 2.1 seconds. It captures your silhouette once when the effect starts to keep the video smooth. To reappear, lower your hand and make the V sign again (or press `R`): the particles fly back and rebuild you.
 
 **Goku:** After choosing the webcam, set the gesture hold time (default 1 second; decimals such as `0.5` and `0.1` are accepted). Hold your index and middle fingers straight and together against your forehead for the selected duration. Animated vertical comic-style lines run across your silhouette just before you teleport away and linger briefly afterward. To reappear, lower your hand, then repeat the gesture for the same selected duration. The return uses the reverse effect. If you break the pose, the countdown starts over. `assets/teleport.MP3` plays on both disappearance and reappearance. The terminal shows the countdown for each gesture. The `V` and `R` keys are disabled in this mode: the gesture is the only way to disappear and reappear. No text is overlaid on the video.
 
@@ -115,7 +126,7 @@ OBS has only one virtual camera. Do not use it as both an OBS input and output a
 - `R`: make the person reappear.
 - `V`: manually start the selected mode's effect.
 - `F`: toggle fullscreen.
-- `M`: return to the effect menu, keeping the same webcam.
+- `M`: return to the effect menu, keeping the same webcam and the captured background: the next effect starts right away, without a new 4-second capture (`SPACE` captures a new one).
 - `Q` or `ESC`: quit and release the cameras.
 
 Shortcuts also work with Caps Lock or Shift.
