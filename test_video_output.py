@@ -15,7 +15,7 @@ def arguments(**overrides):
     values = dict(
         camera=0, width=960, height=540, fps=30.0, fullscreen=False,
         no_mirror=True, virtual_camera=None, virtual_backend=None, virtual_device=None,
-        gesture_debug=False, mode="normal",
+        gesture_debug=False, mode="normal", no_countdown=True,
     )
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -117,7 +117,7 @@ class MenuTests(unittest.TestCase):
                 edition_file.write_text(edition, encoding="utf-8")
                 self.assertEqual(app.edition_modes(edition_file), expected)
             edition_file.write_text("unknown", encoding="utf-8")
-            with self.assertRaisesRegex(RuntimeError, "Edizione non riconosciuta"):
+            with self.assertRaisesRegex(RuntimeError, "Edição não reconhecida"):
                 app.edition_modes(edition_file)
 
     def test_single_mode_edition_starts_without_a_menu(self):
@@ -166,7 +166,7 @@ class MenuTests(unittest.TestCase):
 
 
 class VideoLoopTests(unittest.TestCase):
-    def run_mock_video(self, send_error=None, gesture=("No_Hand", 0.0), mode="normal"):
+    def run_mock_video(self, send_error=None, gesture=("No_Hand", 0.0), mode="normal", countdown=False):
         capture = Mock()
         frames = [np.full((24, 40, 3), color, np.uint8) for color in (10, 40, 80, 120, 160)]
         capture.read.side_effect = [(True, frame) for frame in frames]
@@ -175,7 +175,7 @@ class VideoLoopTests(unittest.TestCase):
         camera.send.side_effect = send_error
         displayed = []
         with ExitStack() as mocks:
-            mocks.enter_context(patch.object(app, "parse_args", return_value=arguments(mode=mode)))
+            mocks.enter_context(patch.object(app, "parse_args", return_value=arguments(mode=mode, no_countdown=not countdown)))
             mocks.enter_context(patch.object(app, "download_models"))
             mocks.enter_context(patch.object(app, "open_camera", return_value=capture))
             mocks.enter_context(patch.object(app, "create_tasks", return_value=(segmenter, recognizer)))
@@ -192,7 +192,8 @@ class VideoLoopTests(unittest.TestCase):
             mocks.enter_context(patch.object(app.cv2, "imshow", side_effect=lambda name, frame: displayed.append(frame.copy())))
             keys = (0, 0, ord("v") if gesture[0] != "Victory" else 0, 0, ord("q"))
             mocks.enter_context(patch.object(app.cv2, "waitKey", side_effect=keys))
-            mocks.enter_context(patch.object(app.cv2, "putText", side_effect=AssertionError("Overlay vietato")))
+            if not countdown:
+                mocks.enter_context(patch.object(app.cv2, "putText", side_effect=AssertionError("Overlay vietato")))
             mocks.enter_context(patch("builtins.print"))
             if send_error is None:
                 self.assertEqual(app.run(), 0)
@@ -218,6 +219,32 @@ class VideoLoopTests(unittest.TestCase):
         np.testing.assert_array_equal(displayed[0], frames[0])  # Calibrazione.
         np.testing.assert_array_equal(displayed[2], frames[2])  # Pronto.
         np.testing.assert_array_equal(displayed[4], frames[1])  # Sparito: solo sfondo.
+
+    def test_countdown_only_in_preview_during_calibration(self):
+        frames, camera, displayed = self.run_mock_video(countdown=True)
+        sent = [call.args[0] for call in camera.send.call_args_list]
+        np.testing.assert_array_equal(sent[0], frames[0])  # Virtuale sempre pulita.
+        self.assertTrue(np.any(displayed[0] != frames[0]))  # Conto alla rovescia.
+        for index in range(2, 5):  # Dopo la calibrazione l'anteprima torna pulita.
+            np.testing.assert_array_equal(displayed[index], sent[index])
+
+    def test_m_key_returns_to_effect_menu_with_same_webcam(self):
+        args = arguments(mode=None, camera=None)
+        with ExitStack() as mocks:
+            mocks.enter_context(patch.object(app, "parse_args", return_value=args))
+            mocks.enter_context(patch.object(app, "edition_modes", return_value=app.ALL_MODES))
+            menu = mocks.enter_context(patch.object(app, "choose_mode", side_effect=["normal", "naruto"]))
+            chooser = mocks.enter_context(patch.object(app, "choose_camera", return_value=0))
+            destroy = mocks.enter_context(patch.object(app.cv2, "destroyAllWindows"))
+            pump = mocks.enter_context(patch.object(app.cv2, "waitKey", return_value=-1))
+            camera = mocks.enter_context(patch.object(
+                app, "run_camera", side_effect=[app.RETURN_TO_MENU, 0]))
+            self.assertEqual(app.run(), 0)
+        self.assertEqual(menu.call_count, 2)
+        chooser.assert_called_once()
+        self.assertEqual([call.args[2] for call in camera.call_args_list], ["normal", "naruto"])
+        destroy.assert_called_once()  # Old video window closed before the menu.
+        self.assertGreater(pump.call_count, 0)
 
     def test_first_gesture_starts_dissolve_in_preview_and_virtual_output(self):
         frames, camera, displayed = self.run_mock_video(gesture=("Victory", 0.9))
@@ -294,10 +321,10 @@ class VideoLoopTests(unittest.TestCase):
         countdown = [call.args[0] for call in printed.call_args_list
                      if call.args and call.args[0].startswith("[Goku] ")]
         self.assertEqual(countdown, [
-            "[Goku] Sparizione tra 1...",
-            "[Goku] Sparizione!",
-            "[Goku] Riapparizione tra 1...",
-            "[Goku] Riapparizione!",
+            "[Goku] Sumindo em 1...",
+            "[Goku] Sumindo!",
+            "[Goku] Reaparecendo em 1...",
+            "[Goku] Reaparecendo!",
         ])
         np.testing.assert_array_equal(displayed[2], frames[2])
         np.testing.assert_array_equal(displayed[14], frames[1])

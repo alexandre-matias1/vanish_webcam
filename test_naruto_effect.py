@@ -117,6 +117,55 @@ class EffectTests(unittest.TestCase):
         overlay_log(expected, load_log(), floor)
         np.testing.assert_array_equal(output, expected)
 
+    def test_log_stays_briefly_then_leaves_in_smoke(self):
+        from local_app.naruto_effect import LOG_HOLD_SECONDS, SUBSTITUTION_TOTAL_SECONDS
+
+        anchor = (120, 80, 90)
+        background = np.full((240, 240, 3), 35, np.uint8)
+        mask = np.zeros((240, 240), np.float32)
+        sprite = load_log()
+        with_log = background.copy()
+        overlay_log(with_log, sprite, landed_log_anchor(anchor, 240))
+
+        def render(age):
+            return render_substitution(background, background, mask, sprite, anchor, age)
+
+        self.assertEqual(LOG_HOLD_SECONDS, 0.0)  # Leaves as soon as it lands.
+        np.testing.assert_array_equal(render(EFFECT_SECONDS + LOG_HOLD_SECONDS), with_log)
+        leaving = render(EFFECT_SECONDS + LOG_HOLD_SECONDS + 0.3)
+        self.assertFalse(np.array_equal(leaving, with_log))  # Smoke, log fading.
+        self.assertFalse(np.array_equal(leaving, background))
+        np.testing.assert_array_equal(render(SUBSTITUTION_TOTAL_SECONDS), background)
+
+    def test_reappearance_brings_person_back_through_smoke(self):
+        from local_app.naruto_effect import render_reappearance
+
+        person = np.full((240, 240, 3), 200, np.uint8)
+        background = np.full((240, 240, 3), 35, np.uint8)
+        mask = np.zeros((240, 240), np.float32)
+        mask[60:200, 80:160] = 1.0
+        anchor = (120, 130, 120)
+        start = render_reappearance(person, background, mask, anchor, 0.0)
+        self.assertEqual(int(start[10, 10, 0]), 35)  # Still empty room outside the smoke.
+        self.assertFalse(np.array_equal(render_reappearance(person, background, mask, anchor, 0.5),
+                                        background))
+        np.testing.assert_array_equal(
+            render_reappearance(person, background, mask, anchor, EFFECT_SECONDS), person)
+
+    def test_naruto_return_needs_someone_in_frame(self):
+        state = app.AppState(phase="vanished")
+        frame = np.zeros((24, 40, 3), np.uint8)
+        with patch.object(app, "person_mask", return_value=np.zeros((24, 40), np.float32)):
+            self.assertIsNone(app.start_naruto_return(state, None, frame, 10, 40, 24, 1.0))
+        self.assertEqual(state.phase, "vanished")
+        body = np.zeros((24, 40), np.float32)
+        body[4:22, 12:28] = 1.0
+        with patch.object(app, "person_mask", return_value=body):
+            mask, anchor = app.start_naruto_return(state, None, frame, 20, 40, 24, 2.0)
+        self.assertEqual(state.phase, "naruto_appearing")
+        self.assertEqual(state.vanish_started, 2.0)
+        self.assertEqual(len(anchor), 3)
+
 
 class MenuTests(unittest.TestCase):
     def test_keyboard_selection(self):
@@ -171,6 +220,57 @@ class NarutoVideoLoopTests(unittest.TestCase):
         sound.play.assert_called_once()
         sound.close.assert_called_once()
 
+
+    def test_vanish_gesture_return_r_return_and_menu_key(self):
+        from local_app.naruto_effect import SUBSTITUTION_TOTAL_SECONDS
+
+        clock = [0.0]
+        empty, person = np.full((80, 120, 3), 30, np.uint8), np.full((80, 120, 3), 200, np.uint8)
+        capture = Mock()
+        capture.read.side_effect = lambda: (True, (empty if clock[0] < 4.5 else person).copy())
+        segmenter, recognizer = Mock(), Mock()
+        hands = {"joined": False}
+        recognizer.recognize_joined_hands.side_effect = lambda image, ms: hands["joined"]
+        sound, preview, phases = Mock(), [], []
+        # (seconds to advance after the frame, key pressed, hands joined afterwards)
+        script = ([(0.5, -1, False)] * 10                      # Background capture.
+                  + [(0.1, ord("V"), False)]                    # Upper-case V vanishes.
+                  + [(0.5, -1, False)] * 9                       # Log lands, waits, leaves.
+                  + [(0.1, -1, False), (0.1, -1, True)]          # Release, then join again.
+                  + [(0.3, -1, False)] * 6                       # Smoke return.
+                  + [(0.1, ord("v"), False), (0.5, -1, False)]   # Vanish again...
+                  + [(0.1, ord("r"), False)]                     # ...R during the log.
+                  + [(0.3, -1, False)] * 6
+                  + [(0.0, ord("M"), False)])                    # Back to the menu.
+        steps = iter(script)
+
+        def wait_key(delay):
+            advance, key, joined = next(steps)
+            clock[0] += advance
+            hands["joined"] = joined
+            return key
+
+        with ExitStack() as mocks:
+            mocks.enter_context(patch.object(app, "download_models"))
+            mocks.enter_context(patch.object(app, "open_camera", return_value=capture))
+            mocks.enter_context(patch.object(app, "create_tasks", return_value=(segmenter, recognizer)))
+            mocks.enter_context(patch.object(app, "VanishSound", return_value=sound))
+            mocks.enter_context(patch.object(app, "open_virtual_camera", return_value=None))
+            mocks.enter_context(patch.object(app, "person_mask", return_value=np.ones((80, 120), np.float32)))
+            mocks.enter_context(patch.object(app.time, "perf_counter", side_effect=lambda: clock[0]))
+            for name in ("namedWindow", "resizeWindow", "destroyAllWindows"):
+                mocks.enter_context(patch.object(app.cv2, name))
+            mocks.enter_context(patch.object(app.cv2, "imshow", side_effect=lambda name, frame: preview.append(frame.copy())))
+            mocks.enter_context(patch.object(app.cv2, "waitKey", side_effect=wait_key))
+            mocks.enter_context(patch("builtins.print"))
+            args = arguments(mode="naruto", width=120, height=80)
+            args.menu_available = True
+            result = app.run_camera(args, ExitStack(), "naruto")
+        self.assertEqual(result, app.RETURN_TO_MENU)
+        self.assertGreater(SUBSTITUTION_TOTAL_SECONDS, 0)
+        # Vanish (V), gesture return, vanish (v), R return: four smoke sounds.
+        self.assertEqual(sound.play.call_count, 4)
+        np.testing.assert_array_equal(preview[-1], person)  # Visible again at the end.
 
 if __name__ == "__main__":
     unittest.main()

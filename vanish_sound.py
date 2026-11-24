@@ -15,30 +15,32 @@ TELEPORT_SOUND_PATH = Path(__file__).resolve().parent / "assets" / "teleport.MP3
 class VanishSound:
     def __init__(self, path: Path = SOUND_PATH):
         if not path.is_file():
-            raise RuntimeError(f"Audio di sparizione non trovato: {path}")
+            raise RuntimeError(f"Áudio de desaparecimento não encontrado: {path}")
         self.path = path
 
         os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
         self.process = None
         self.ffplay = None
+        self.owns_mixer = False
         try:
             from pygame import mixer
-        except ImportError:
-            self.ffplay = shutil.which("ffplay")
-            if self.ffplay is None:
-                raise RuntimeError(f"Per riprodurre {path.name} installa pygame o ffplay.")
-            return
-
-        self.mixer = mixer
-        self.owns_mixer = mixer.get_init() is None
-        try:
+            self.mixer = mixer
+            self.owns_mixer = mixer.get_init() is None
             if self.owns_mixer:
                 mixer.init(frequency=44100, size=-16, channels=2, buffer=256)
             self.sound = mixer.Sound(str(path))  # Decode once, before opening the webcam.
         except Exception as error:
+            # ImportError, or a pygame built without SDL_mixer (NotImplementedError),
+            # or no audio device: fall back to ffplay (ffmpeg) when available.
             if self.owns_mixer:
-                mixer.quit()
-            raise RuntimeError(f"Impossibile aprire l'audio di sparizione: {error}") from error
+                self.mixer.quit()
+                self.owns_mixer = False
+            self.ffplay = shutil.which("ffplay")
+            if self.ffplay is None:
+                raise RuntimeError(
+                    f"Não foi possível abrir o áudio de desaparecimento: {error}. "
+                    f"Para tocar {path.name}, instale o pygame (com mixer) ou o ffplay (ffmpeg)."
+                ) from error
 
     def play(self) -> None:
         if self.ffplay is not None:
@@ -53,11 +55,11 @@ class VanishSound:
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
             except OSError as error:
-                raise RuntimeError(f"Impossibile avviare l'audio di sparizione: {error}") from error
+                raise RuntimeError(f"Não foi possível tocar o áudio de desaparecimento: {error}") from error
             return
         self.sound.stop()
         if self.sound.play() is None:
-            raise RuntimeError("Impossibile avviare l'audio di sparizione: nessun canale libero.")
+            raise RuntimeError("Não foi possível tocar o áudio de desaparecimento: nenhum canal livre.")
 
     def stop(self) -> None:
         if self.ffplay is not None:

@@ -1,5 +1,11 @@
-mediapipe==1.0.1
+# MediaPipe 1.x is killed (SIGKILL) while creating tasks on Linux; 0.10.35 works.
+mediapipe==1.0.1; sys_platform != "linux"
+mediapipe==0.10.35; sys_platform == "linux"
 opencv-contrib-python>=4.14,<6
 numpy>=2.0,<3
 pyvirtualcam>=0.15,<1
-pygame>=2.6,<3
+# Draws window texts with accents (ui_text.py).
+pillow>=10,<14
+# pygame has no Python 3.14 wheels (a source build lacks the mixer); pygame-ce is a drop-in fork.
+pygame>=2.6,<3; python_version < "3.14"
+pygame-ce>=2.5,<3; python_version >= "3.14"
