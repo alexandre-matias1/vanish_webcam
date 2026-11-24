@@ -221,5 +221,19 @@ class MultiViewTests(unittest.TestCase):
         self.assertEqual(calls, [(37, 24)])
 
 
+class CalibrationCountdownTest(unittest.TestCase):
+    def test_countdown_draws_on_a_copy_and_keeps_camera_frame_clean(self):
+        from local_app.vanish_cam import draw_calibration_countdown
+
+        frame = np.full((540, 960, 3), 90, dtype=np.uint8)
+        original = frame.copy()
+        for elapsed in (0.0, 2.5, 3.99, 5.0):
+            preview = draw_calibration_countdown(frame, elapsed)
+            self.assertEqual(preview.shape, frame.shape)
+            self.assertFalse(np.array_equal(preview, frame))
+        np.testing.assert_array_equal(frame, original)
+
+
 if __name__ == "__main__":
     unittest.main()
+

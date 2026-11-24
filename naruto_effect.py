@@ -10,6 +10,11 @@ import numpy as np
 
 
 EFFECT_SECONDS = 1.45
+# After landing, the log stays this long, then leaves in a puff of smoke
+# (0: it leaves as soon as it lands).
+LOG_HOLD_SECONDS = 0.0
+LOG_EXIT_FADE_SECONDS = 0.22
+SUBSTITUTION_TOTAL_SECONDS = EFFECT_SECONDS + LOG_HOLD_SECONDS + EFFECT_SECONDS
 LOG_PATH = Path(__file__).resolve().parent / "assets" / "substitution_log.png"
 
 
@@ -56,7 +61,7 @@ def substitution_anchor(mask: np.ndarray) -> tuple[int, int, int]:
 def load_log() -> np.ndarray:
     sprite = cv2.imread(str(LOG_PATH), cv2.IMREAD_UNCHANGED)
     if sprite is None or sprite.ndim != 3 or sprite.shape[2] != 4:
-        raise RuntimeError(f"Sprite del tronco non disponibile: {LOG_PATH}")
+        raise RuntimeError(f"Imagem do tronco indisponível: {LOG_PATH}")
     return sprite
 
 
@@ -167,10 +172,20 @@ def _smoke_layer(frame: np.ndarray, anchor: tuple[int, int, int],
 def render_substitution(frame: np.ndarray, background: np.ndarray, mask: np.ndarray,
                         sprite: np.ndarray, anchor: tuple[int, int, int], age: float,
                         log_cache: dict[int, np.ndarray] | None = None) -> np.ndarray:
-    """Quick body replacement, expanding smoke, then a persistent wooden log."""
+    """Quick body replacement and expanding smoke; the log lands, waits, then vanishes."""
     if age >= EFFECT_SECONDS:
         output = background.copy()
-        overlay_log(output, sprite, landed_log_anchor(anchor, output.shape[0]), cache=log_cache)
+        landed = landed_log_anchor(anchor, output.shape[0])
+        exit_age = age - EFFECT_SECONDS - LOG_HOLD_SECONDS
+        if exit_age < 0:
+            overlay_log(output, sprite, landed, cache=log_cache)
+            return output
+        if exit_age >= EFFECT_SECONDS:
+            return output
+        _smoke_layer(output, landed, exit_age, foreground=False)
+        overlay_log(output, sprite, landed, 1.0 - exit_age / LOG_EXIT_FADE_SECONDS,
+                    cache=log_cache)
+        _smoke_layer(output, landed, exit_age, foreground=True)
         return output
     if age >= 0.13:
         output = background.copy()
@@ -185,5 +200,21 @@ def render_substitution(frame: np.ndarray, background: np.ndarray, mask: np.ndar
     moving_anchor = falling_log_anchor(anchor, output.shape[0], age)
     overlay_log(output, sprite, moving_anchor, log_opacity,
                 scale=1.15 - min(age, 0.25) * 0.6, cache=log_cache)
+    _smoke_layer(output, anchor, age, foreground=True)
+    return output
+
+
+def render_reappearance(frame: np.ndarray, background: np.ndarray, mask: np.ndarray,
+                        anchor: tuple[int, int, int], age: float) -> np.ndarray:
+    """Reverse substitution: a smoke cloud bursts and the person is back inside it."""
+    if age >= EFFECT_SECONDS:
+        return frame.copy()
+    # The person materializes while the cloud is densest, hidden by the smoke.
+    presence = mask * min(1.0, max(0.0, (age - 0.12) / 0.18))
+    output = (
+        frame.astype(np.float32) * presence[:, :, None]
+        + background.astype(np.float32) * (1.0 - presence[:, :, None])
+    ).astype(np.uint8)
+    _smoke_layer(output, anchor, age, foreground=False)
     _smoke_layer(output, anchor, age, foreground=True)
     return output

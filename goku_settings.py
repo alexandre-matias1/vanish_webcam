@@ -5,16 +5,21 @@ import math
 import cv2
 import numpy as np
 
+try:
+    from .ui_text import put_text
+except ImportError:
+    from ui_text import put_text
+
 
 def parse_goku_delay(text: str) -> float:
     value = float(text.strip().replace(',', '.') or '1')
     if not math.isfinite(value) or value <= 0:
-        raise ValueError('Inserisci un numero maggiore di zero.')
+        raise ValueError('Digite um número maior que zero.')
     return value
 
 
 def choose_goku_delay(check_license=None) -> float | None:
-    title = 'Goku - Tempo del gesto'
+    title = 'Goku - Tempo do gesto'
     text, selected, error = '1', True, ''
     action = [None]
 
@@ -33,18 +38,18 @@ def choose_goku_delay(check_license=None) -> float | None:
                 check_license()
             window = np.full((410,720,3),(26,29,34),np.uint8)
             def label(message, position, size=.56, color=(220,230,237)):
-                cv2.putText(window,message,position,cv2.FONT_HERSHEY_SIMPLEX,size,color,1,cv2.LINE_AA)
-            label('GOKU - TEMPO DEL GESTO',(50,60),.78)
-            label('Quanto mantenere il gesto per sparire o riapparire?',(50,103),.53)
+                put_text(window,message,position,size,color,1)
+            label('GOKU - TEMPO DO GESTO',(50,60),.78)
+            label('Por quanto tempo segurar o gesto para sumir ou reaparecer?',(50,103),.53)
             cv2.rectangle(window,(50,130),(670,200),(48,54,62),-1)
             cv2.rectangle(window,(50,130),(670,200),(111,180,195) if selected else (111,142,153),2)
-            label(text or '1 (predefinito)',(70,177),.9)
-            label('secondi',(540,175),.6)
-            label('Esempi: 0.1, 0.5, 1, 2  |  Invio per confermare',(50,233),.53)
-            label('Lo stesso tempo vale per sparizione e riapparizione.',(50,258),.51,(179,195,201))
+            label(text or '1 (padrão)',(70,177),.9)
+            label('segundos',(540,175),.6)
+            label('Exemplos: 0.1, 0.5, 1, 2  |  Enter para confirmar',(50,233),.53)
+            label('O mesmo tempo vale para sumir e para reaparecer.',(50,258),.51,(179,195,201))
             if error:
                 label(error,(50,289),.50,(120,145,255))
-            for x1,x2,caption in ((50,310,'Annulla'),(395,670,'Continua')):
+            for x1,x2,caption in ((50,310,'Cancelar'),(395,670,'Continuar')):
                 cv2.rectangle(window,(x1,310),(x2,370),(48,54,62) if x1==50 else (61,113,87),-1)
                 label(caption,(x1+72,348),.65)
             cv2.imshow(title,window)
@@ -56,7 +61,7 @@ def choose_goku_delay(check_license=None) -> float | None:
                 try:
                     return parse_goku_delay(text)
                 except ValueError:
-                    error = 'Inserisci un numero maggiore di zero (es. 0.5).'
+                    error = 'Digite um número maior que zero (ex.: 0.5).'
                     selected = True
             elif key in (8,127):
                 text = '' if selected else text[:-1]

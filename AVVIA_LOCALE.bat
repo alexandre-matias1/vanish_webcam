@@ -6,7 +6,7 @@ set "VENV_DIR=.venv-local"
 set "VENV_PY=%VENV_DIR%\Scripts\python.exe"
 
 if not exist "%VENV_PY%" (
-  echo [Vanish Lab] Creo l'ambiente Python locale...
+  echo [Vanish Lab] Criando o ambiente Python local...
   where py >nul 2>nul
   if not errorlevel 1 (
     py -3 -m venv "%VENV_DIR%"
@@ -18,20 +18,20 @@ if not exist "%VENV_PY%" (
 
 "%VENV_PY%" -c "import cv2, mediapipe, numpy, pyvirtualcam" >nul 2>nul
 if errorlevel 1 (
-  echo [Vanish Lab] Installo i componenti necessari. Serve internet solo questa volta...
+  echo [Vanish Lab] Instalando os componentes necessarios. A internet so e necessaria desta vez...
   "%VENV_PY%" -m pip install --upgrade pip
   if errorlevel 1 goto :error
   "%VENV_PY%" -m pip install -r "local_app\requirements.txt"
   if errorlevel 1 goto :error
 )
 
-echo [Vanish Lab] Avvio la webcam...
+echo [Vanish Lab] Abrindo a webcam...
 "%VENV_PY%" "local_app\vanish_cam.py" %*
 if errorlevel 1 goto :error
 exit /b 0
 
 :error
 echo.
-echo Impossibile avviare Vanish Lab. Leggi local_app\README.md per le soluzioni comuni.
+echo Nao foi possivel abrir o Vanish Lab. Leia local_app\README.md para as solucoes comuns.
 pause
 exit /b 1

@@ -8,6 +8,11 @@ from PyInstaller.utils.hooks import collect_dynamic_libs
 root = Path(SPECPATH).resolve()
 icon_file = root / "assets" / "vanish_icon.ico"
 segmenter = (root / "models" / "selfie_segmenter_landscape.tflite", "models")
+# UI text font (accents); shared by every edition, like the segmenter.
+fonts = (
+    (root / "assets" / "fonts" / "DejaVuSans.ttf", "assets/fonts"),
+    (root / "assets" / "fonts" / "DejaVuSans-Bold.ttf", "assets/fonts"),
+)
 license_config = (root / "license_config.json", ".")
 editions = (
     (
@@ -47,22 +52,22 @@ editions = (
 
 all_resources = [
     path for edition, _, extras in editions
-    for path, _ in (segmenter, *extras, (root / "editions" / edition / "edition.txt", "."))
+    for path, _ in (segmenter, *fonts, *extras, (root / "editions" / edition / "edition.txt", "."))
 ]
 missing = [str(path) for path in (icon_file, license_config[0], *all_resources) if not path.is_file()]
 if missing:
-    raise SystemExit("File necessari alla build mancanti:\n" + "\n".join(missing))
+    raise SystemExit("Arquivos necessários para o build ausentes:\n" + "\n".join(missing))
 
 mediapipe_binaries = collect_dynamic_libs("mediapipe")
 executables = []
 for edition, name, extras in editions:
-    resources = (segmenter, license_config, *extras, (root / "editions" / edition / "edition.txt", "."))
+    resources = (segmenter, *fonts, license_config, *extras, (root / "editions" / edition / "edition.txt", "."))
     analysis = Analysis(
         [str(root / "vanish_cam.py")],
         pathex=[str(root)],
         binaries=mediapipe_binaries,
         datas=[(str(path), destination) for path, destination in resources],
-        hiddenimports=["pygame.mixer", "mediapipe.tasks.c"],
+        hiddenimports=["pygame.mixer", "mediapipe.tasks.c", "PIL.ImageFont"],
         hookspath=[],
         hooksconfig={},
         runtime_hooks=[],

@@ -74,7 +74,7 @@ class ClientTests(unittest.TestCase):
         backend = self.backend()
         backend._request = Mock(return_value={'transaction':'tx'})
         backend._document = Mock(return_value={'fields':{'active':{'booleanValue':False}}})
-        with self.assertRaisesRegex(licensing.LicenseError, 'non attiva'):
+        with self.assertRaisesRegex(licensing.LicenseError, 'não ativa'):
             backend.acquire()
         self.assertFalse(any(c.args[0] == ':commit' for c in backend._request.call_args_list))
 
@@ -93,7 +93,7 @@ class ClientTests(unittest.TestCase):
         backend._request = Mock(return_value={'transaction':'tx'})
         backend._document = Mock(side_effect=[{'fields':{'active':{'booleanValue':True}}},
             {'fields':{'uid':{'stringValue':'pc-b'},'deviceId':{'stringValue':'b'*64}}}])
-        with self.assertRaisesRegex(licensing.LicenseError, 'altro PC'):
+        with self.assertRaisesRegex(licensing.LicenseError, 'outro PC'):
             backend.acquire()
         self.assertFalse(any(c.args[0] == ':commit' for c in backend._request.call_args_list))
 
